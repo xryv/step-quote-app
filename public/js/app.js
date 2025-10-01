@@ -443,7 +443,7 @@ function snapshotParams(){
 }
 
 /* ----------------------- FormataÃ§Ã£o ----------------------- */
-const CURRENCY_SYMBOLS = { EUR:'â‚¬', USD:'$', GBP:'Â£' };
+const CURRENCY_SYMBOLS = { EUR: '\u20AC', USD: '$', GBP: '\u00A3' };
 const fmtNumber = v => new Intl.NumberFormat('pt-PT',{minimumFractionDigits:2,maximumFractionDigits:2}).format(v);
 const fmtMoney  = (v,c='EUR') => `${fmtNumber(v)}${CURRENCY_SYMBOLS[c] || ` ${c}`}`;
 const fmtMin    = min => `${Math.round(min)}min`;
