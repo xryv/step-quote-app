@@ -1,0 +1,73 @@
+# --- Node / servidor ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json.*   # artefatos temporários; mantém o package-lock.json normal
+.pnpm-debug.log*
+
+# Logs
+logs/
+*.log
+*.log.*
+*.out
+*.err
+
+# PIDs
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Cobertura / testes
+coverage/
+.nyc_output/
+
+# Caches de bundlers e ferramentas
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# Builds genéricos
+dist/
+build/
+tmp/
+temp/
+*.tmp
+
+# Ambiente
+.env
+.env.*
+!.env.example
+
+# IDE / SO
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Navegador
+.safari.extension
+*.crdownload
+
+# Deploys (opcional)
+.vercel/
+.netlify/
+
+# --- App específica ---
+# Servimos OCCT a partir de node_modules via /vendor/occt (server.js),
+# portanto nada para versionar em /public/vendor. Se um dia copiares ficheiros
+# para lá, descomenta a linha seguinte:
+# public/vendor/
+
+# Uploads locais (se algum dia adicionares pasta de uploads)
+# uploads/
+
+# Exemplos STEP (mantém os teus exemplos versionados; se não quiseres, descomenta)
+# *.step
+# *.stp

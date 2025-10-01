@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <title>step-quote-app · Estimador CNC</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Drag-and-drop STEP ➜ confirmar parâmetros ➜ tempos (peça piloto/série) e orçamento. UI industrial. Local.">
+  <link rel="stylesheet" href="./css/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo" aria-hidden="true">◇</div>
+    <div class="title">
+      <strong>step-quote-app</strong>
+      <span class="muted">local · offline-first</span>
+    </div>
+  </div>
+  <div class="actions">
+    <button id="resetBtn" class="btn ghost" title="Limpar sessão">Reset</button>
+  </div>
+</header>
+
+<main class="container">
+  <!-- Etapas -->
+  <ol class="steps">
+    <li class="step" data-step="1"><span>1</span> Upload STEP</li>
+    <li class="step" data-step="2"><span>2</span> Parâmetros</li>
+    <li class="step" data-step="3"><span>3</span> Resultados</li>
+  </ol>
+
+  <!-- Painel 1: Upload -->
+  <section id="panelUpload" class="panel">
+    <header class="panel__header">
+      <h2>Upload do ficheiro STEP</h2>
+      <p class="muted">Arraste um ficheiro <b>.step</b> / <b>.stp</b> ou clique para selecionar.</p>
+    </header>
+
+    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Carregar STEP">
+      <input id="fileInput" type="file" accept=".step,.stp" hidden>
+      <div class="dz__icon" aria-hidden="true">⬆</div>
+      <div class="dz__text">Arraste o ficheiro aqui<br><small>ou clique para selecionar</small></div>
+    </div>
+
+    <div id="fileInfo" class="fileinfo hidden">
+      <div class="fileinfo__row"><span>Nome</span><b id="fiName">—</b></div>
+      <div class="fileinfo__row"><span>Tamanho</span><b id="fiSize">—</b></div>
+      <div class="fileinfo__row"><span>Última modificação</span><b id="fiDate">—</b></div>
+    </div>
+
+    <footer class="panel__footer">
+      <button id="toParamsBtn" class="btn primary" disabled>Continuar para Parâmetros</button>
+    </footer>
+  </section>
+
+  <!-- Painel 2: Parâmetros -->
+  <section id="panelParams" class="panel hidden">
+    <header class="panel__header">
+      <h2>Parâmetros de Produção</h2>
+      <p class="muted">Confirme/tune os parâmetros. Guardamos no dispositivo (localStorage).</p>
+    </header>
+
+    <form id="paramsForm" class="grid two">
+      <!-- Material -->
+      <fieldset>
+        <legend>Material</legend>
+        <label>Tipo
+          <select id="materialKey"></select>
+        </label>
+        <div class="grid two">
+          <label>Densidade (g/cm³)
+            <input id="density" type="number" step="0.01" min="0">
+          </label>
+          <label>Custo (€ / kg)
+            <input id="costPerKg" type="number" step="0.01" min="0">
+          </label>
+        </div>
+        <div class="grid two">
+          <label>MRR Rough (cm³/min)
+            <input id="mrrRough" type="number" step="1" min="0">
+          </label>
+          <label>MRR Finish (cm³/min)
+            <input id="mrrFinish" type="number" step="1" min="0">
+          </label>
+        </div>
+      </fieldset>
+
+      <!-- Máquina -->
+      <fieldset>
+        <legend>Máquina</legend>
+        <label>Tipo
+          <select id="machineKey"></select>
+        </label>
+        <div class="grid two">
+          <label>Taxa (€ / h)
+            <input id="hourlyRate" type="number" step="1" min="0">
+          </label>
+          <label>Setup (min)
+            <input id="setupMin" type="number" step="1" min="0">
+          </label>
+        </div>
+      </fieldset>
+
+      <!-- Globais -->
+      <fieldset>
+        <legend>Globais</legend>
+        <div class="grid three">
+          <label>Stock factor
+            <input id="stockFactor" type="number" step="0.01" min="1" value="1.05">
+          </label>
+          <label>Seg/Face (acab.)
+            <input id="secPerFace" type="number" step="0.1" min="0" value="0.8">
+          </label>
+          <label>Seg/Furo
+            <input id="secPerHole" type="number" step="0.1" min="0" value="3">
+          </label>
+        </div>
+        <div class="grid three">
+          <label>Desgaste (€ / cm³)
+            <input id="wearPerCm3" type="number" step="0.001" min="0" value="0.002">
+          </label>
+          <label>Overhead (×)
+            <input id="overheadMult" type="number" step="0.01" min="1" value="1.12">
+          </label>
+          <label>Margem (×)
+            <input id="marginMult" type="number" step="0.01" min="1" value="1.18">
+          </label>
+        </div>
+        <div class="grid two">
+          <label>Unidades (geom.)
+            <select id="units">
+              <option value="millimeter">mm</option>
+              <option value="inch">inch</option>
+              <option value="centimeter">cm</option>
+              <option value="meter">m</option>
+              <option value="foot">ft</option>
+            </select>
+          </label>
+          <label>Moeda
+            <select id="currency">
+              <option value="EUR">EUR</option>
+              <option value="USD">USD</option>
+              <option value="GBP">GBP</option>
+            </select>
+          </label>
+        </div>
+      </fieldset>
+
+      <!-- Lotes -->
+      <fieldset>
+        <legend>Lotes (peças/série)</legend>
+        <div class="grid four">
+          <label>Q1
+            <input id="q1" type="number" step="1" min="1" value="1">
+          </label>
+          <label>Q10
+            <input id="q10" type="number" step="1" min="1" value="10">
+          </label>
+          <label>Q50
+            <input id="q50" type="number" step="1" min="1" value="50">
+          </label>
+          <label>Q100
+            <input id="q100" type="number" step="1" min="1" value="100">
+          </label>
+        </div>
+      </fieldset>
+    </form>
+
+    <footer class="panel__footer">
+      <button id="backToUploadBtn" class="btn ghost">Voltar</button>
+      <button id="toResultsBtn" class="btn primary">Calcular</button>
+    </footer>
+  </section>
+
+  <!-- Painel 3: Resultados -->
+  <section id="panelResults" class="panel hidden">
+    <header class="panel__header">
+      <h2>Resultados (Piloto & Série)</h2>
+      <p class="muted">Nesta fase: placeholder de cálculo. Integração STEP/OCCT entra na próxima etapa.</p>
+    </header>
+
+        <!-- 👇 Painel de Diagnóstico -->
+    <section class="diag">
+      <div class="diagGrid">
+        <div class="metricCard">
+          <h4>BBox (mm)</h4>
+          <div id="mBBox" class="metricValue">—</div>
+        </div>
+        <div class="metricCard">
+          <h4>Volume peça (cm³)</h4>
+          <div id="mVolume" class="metricValue">—</div>
+        </div>
+        <div class="metricCard">
+          <h4>Remoção (cm³)</h4>
+          <div id="mRemoval" class="metricValue">—</div>
+        </div>
+        <div class="metricCard">
+          <h4>Faces</h4>
+          <div id="mFaces" class="metricValue">—</div>
+        </div>
+        <div class="metricCard">
+          <h4>Círculos</h4>
+          <div id="mCircles" class="metricValue">—</div>
+        </div>
+      </div>
+
+      <div class="sliders">
+        <div class="sliderRow">
+          <label for="sliderFace">Seg/Face (acabamento)</label>
+          <input id="sliderFace" type="range" min="0" max="5" step="0.1">
+          <span id="sliderFaceVal" class="sliderVal">0.0s</span>
+        </div>
+        <div class="sliderRow">
+          <label for="sliderHole">Seg/Furo</label>
+          <input id="sliderHole" type="range" min="0" max="10" step="0.1">
+          <span id="sliderHoleVal" class="sliderVal">0.0s</span>
+        </div>
+      </div>
+    </section>
+
+
+    <div class="results">
+      <div class="resultCard">
+        <h3>Peça Piloto</h3>
+        <div class="kv"><span>Tempo total</span><b id="rPilotTime">—</b></div>
+        <div class="kv"><span>Custo estimado</span><b id="rPilotCost">—</b></div>
+      </div>
+      <div class="resultCard">
+        <h3>Série</h3>
+        <div id="batchList" class="batchList"></div>
+      </div>
+    </div>
+
+    <footer class="panel__footer">
+      <button id="backToParamsBtn" class="btn ghost">Ajustar Parâmetros</button>
+      <button id="exportBtn" class="btn">Exportar JSON</button>
+    </footer>
+  </section>
+
+
+</main>
+
+<!-- Toast -->
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<script src="./js/config.js"></script>
+<script src="./js/app.js"></script>
+</body>
+</html>
