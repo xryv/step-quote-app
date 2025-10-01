@@ -16,6 +16,29 @@ const state = {
   lastCalc: null     // cache Ãºltimo cÃ¡lculo (para export)
 };
 
+const PARAM_TOOLTIPS = {
+  materialKey: 'Escolhe o material base; densidade e custo sao preenchidos automaticamente.',
+  density: 'Massa volumetrica usada para calcular stock e custo do material.',
+  costPerKg: 'Preco de compra por quilograma do material bruto.',
+  mrrRough: 'Taxa media de remocao de material durante o desbaste.',
+  mrrFinish: 'Taxa de remocao durante o acabamento leve.',
+  machineKey: 'Seleciona o preset de maquina; carrega taxa horaria e setup.',
+  hourlyRate: 'Custo hora carregado para operar a maquina, incluindo mao de obra.',
+  setupMin: 'Tempo de preparacao antes de produzir o primeiro lote.',
+  stockFactor: 'Multiplicador aplicado ao volume da peca para estimar o bloco bruto.',
+  secPerFace: 'Segundos extra por face considerados para acabamento ou inspeccao.',
+  secPerHole: 'Segundos adicionados por cada furo identificado.',
+  wearPerCm3: 'Custo estimado de desgaste de ferramenta por volume removido.',
+  overheadMult: 'Multiplicador para custos indiretos como energia e gestao.',
+  marginMult: 'Multiplicador de margem comercial aplicado apos custos e overhead.',
+  units: 'Unidade usada para interpretar as dimensoes do STEP.',
+  currency: 'Moeda utilizada para apresentar os custos calculados.',
+  q1: 'Peca piloto; normalmente 1 unidade para validar o setup.',
+  q10: 'Segundo patamar de quantidade usado para descontos de serie curta.',
+  q50: 'Lote intermedio para prever custos em serie media.',
+  q100: 'Lote grande para avaliar descontos e produtividade.'
+};
+
 /* ----------------------- Helpers UI ----------------------- */
 function toast(msg, ms=2200){
   const el = $('#toast');
@@ -39,6 +62,47 @@ function setStep(step){
   $('#panelUpload').classList.toggle('hidden', step!==1);
   $('#panelParams').classList.toggle('hidden', step!==2);
   $('#panelResults').classList.toggle('hidden', step!==3);
+}
+
+function ensureLabelHead(label){
+  let head = label.querySelector('.label-head');
+  if (head) return head;
+  head = document.createElement('span');
+  head.className = 'label-head';
+  const labelText = (label.textContent || '').trim();
+  while (label.firstChild && label.firstChild.nodeType === Node.TEXT_NODE) {
+    const value = (label.firstChild.textContent || '');
+    label.removeChild(label.firstChild);
+    if (value.trim()) {
+      head.appendChild(document.createTextNode(value.trim()));
+      break;
+    }
+  }
+  if (!head.textContent) {
+    head.appendChild(document.createTextNode(labelText || 'Parametro'));
+  }
+  label.insertBefore(head, label.firstChild);
+  return head;
+}
+
+function attachTooltipToInput(id, tip){
+  const el = document.getElementById(id);
+  if (!el) return;
+  const label = el.closest('label');
+  if (!label) return;
+  const head = ensureLabelHead(label);
+  if (head.querySelector('.help-tip')) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'help-tip';
+  btn.dataset.tip = tip;
+  btn.setAttribute('aria-label', tip);
+  btn.textContent = '?';
+  head.appendChild(btn);
+}
+
+function injectParamTooltips(){
+  Object.entries(PARAM_TOOLTIPS).forEach(([id, tip]) => attachTooltipToInput(id, tip));
 }
 
 /* ----------------------- Parse STEP textual ----------------------- */
@@ -724,6 +788,7 @@ function boot(){
   setStep(1);
   bindUpload();
   initParams();
+  injectParamTooltips();
   bindNav();
   bindDiagSliders();
 }
