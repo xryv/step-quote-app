@@ -1,7 +1,7 @@
 // step-quote-app front-end
-// Importação real de STEP -> JSON (header, entidades) + worker OCCT (bbox & volume).
-// Diagnóstico (BBox, Volume, Remoção, Faces, Círculos) + sliders live (seg/face, seg/furo).
-// Política de preços: Q1 = peça piloto; descontos por quantidade (tiers em config).
+// ImportaÃ§Ã£o real de STEP -> JSON (header, entidades) + worker OCCT (bbox & volume).
+// DiagnÃ³stico (BBox, Volume, RemoÃ§Ã£o, Faces, CÃ­rculos) + sliders live (seg/face, seg/furo).
+// PolÃ­tica de preÃ§os: Q1 = peÃ§a piloto; descontos por quantidade (tiers em config).
 
 const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
@@ -12,7 +12,8 @@ const state = {
   params: null,
   storageKey: 'SQ_PARAMS_V1',
   stepJson: null,    // JSON derivado do STEP
-  lastCalc: null     // cache último cálculo (para export)
+  unitDetected: null,
+  lastCalc: null     // cache Ãºltimo cÃ¡lculo (para export)
 };
 
 /* ----------------------- Helpers UI ----------------------- */
@@ -66,17 +67,175 @@ function parseEntities(text){
   return hist;
 }
 
+const UNIT_LABELS = {
+  millimeter: 'mm',
+  centimeter: 'cm',
+  meter: 'm',
+  inch: 'in',
+  foot: 'ft'
+};
+
+function detectStepLinearUnit(stepText = '') {
+  const upper = stepText.toUpperCase();
+  if (/\bINCH\b/.test(upper)) return 'inch';
+  if (/\bFOOT\b/.test(upper)) return 'foot';
+  const siMatch = upper.match(/SI_UNIT\s*\(\s*(\.\w+\.)?\s*,\s*\.METRE\.\s*\)/);
+  if (siMatch) {
+    const prefix = (siMatch[1] || '').replace(/\./g, '').toLowerCase();
+    if (prefix === 'milli') return 'millimeter';
+    if (prefix === 'centi') return 'centimeter';
+    if (prefix) return 'meter';
+    return 'meter';
+  }
+  if (/\.MILLI\.,\.METRE\./.test(upper)) return 'millimeter';
+  if (/\.CENTI\.,\.METRE\./.test(upper)) return 'centimeter';
+  if (/\.METRE\./.test(upper)) return 'meter';
+  return 'millimeter';
+}
+
+function formatUnitLabel(unit) {
+  const key = (unit || '').toLowerCase();
+  return UNIT_LABELS[key] || key || '--';
+}
+
 /* ----------------------- Worker OCCT ----------------------- */
-function runOcctWorker(fileBuffer, unit='millimeter'){
+function runOcctWorker(fileBuffer, options = 'millimeter') {
+  const opts = typeof options === 'string' ? { linearUnit: options } : (options || {});
+  const payload = {
+    fileBuffer,
+    unit: opts.linearUnit || 'millimeter',
+    sourceUnit: opts.sourceUnit || null
+  };
   return new Promise((resolve) => {
     const w = new Worker('./js/occt-worker.js');
     w.onmessage = (e) => { resolve(e.data); w.terminate(); };
-    w.postMessage({ fileBuffer, unit });
+    w.postMessage(payload);
   });
 }
+function analyzeOcctMeshes(meshes) {
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  let totalVolume = 0;
+  let totalArea = 0;
+  let openEdgesTotal = 0;
+  let foundVertices = false;
+
+  const addEdge = (store, a, b) => {
+    if (a === b) return;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    store.set(key, (store.get(key) || 0) + 1);
+  };
+
+  for (const mesh of meshes) {
+    const positions = mesh?.attributes?.position?.array;
+    if (!positions || positions.length < 9) continue;
+    foundVertices = true;
+
+    for (let i = 0; i < positions.length; i += 3) {
+      const x = positions[i];
+      const y = positions[i + 1];
+      const z = positions[i + 2];
+      if (x < min[0]) min[0] = x;
+      if (y < min[1]) min[1] = y;
+      if (z < min[2]) min[2] = z;
+      if (x > max[0]) max[0] = x;
+      if (y > max[1]) max[1] = y;
+      if (z > max[2]) max[2] = z;
+    }
+
+    const indices = mesh?.index?.array;
+    if (!indices || indices.length < 3) {
+      continue;
+    }
+
+    const edgeUse = new Map();
+    let meshVolume = 0;
+    let meshArea = 0;
+
+    for (let i = 0; i < indices.length; i += 3) {
+      const ia = indices[i];
+      const ib = indices[i + 1];
+      const ic = indices[i + 2];
+      if (ia < 0 || ib < 0 || ic < 0) continue;
+
+      const ax = positions[ia * 3];
+      const ay = positions[ia * 3 + 1];
+      const az = positions[ia * 3 + 2];
+      const bx = positions[ib * 3];
+      const by = positions[ib * 3 + 1];
+      const bz = positions[ib * 3 + 2];
+      const cx = positions[ic * 3];
+      const cy = positions[ic * 3 + 1];
+      const cz = positions[ic * 3 + 2];
+
+      const abx = bx - ax;
+      const aby = by - ay;
+      const abz = bz - az;
+      const acx = cx - ax;
+      const acy = cy - ay;
+      const acz = cz - az;
+
+      const crossX = aby * acz - abz * acy;
+      const crossY = abz * acx - abx * acz;
+      const crossZ = abx * acy - aby * acx;
+      const triArea = 0.5 * Math.hypot(crossX, crossY, crossZ);
+      if (Number.isFinite(triArea)) {
+        meshArea += triArea;
+      }
+
+      const vol = (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6;
+      if (Number.isFinite(vol)) {
+        meshVolume += vol;
+      }
+
+      addEdge(edgeUse, ia, ib);
+      addEdge(edgeUse, ib, ic);
+      addEdge(edgeUse, ic, ia);
+    }
+
+    totalVolume += meshVolume;
+    totalArea += meshArea;
+
+    for (const useCount of edgeUse.values()) {
+      if (useCount !== 2) {
+        openEdgesTotal += 1;
+      }
+    }
+  }
+
+  if (!foundVertices) {
+    throw new Error('OCCT: empty meshes in result');
+  }
+
+  const size = {
+    x: max[0] - min[0],
+    y: max[1] - min[1],
+    z: max[2] - min[2]
+  };
+
+  const warnings = [];
+  const isWatertight = openEdgesTotal === 0;
+  if (!isWatertight) {
+    warnings.push('mesh_not_watertight');
+  }
+
+  return {
+    min,
+    max,
+    size,
+    volume: Math.abs(totalVolume),
+    area: totalArea,
+    openEdges: openEdgesTotal,
+    isWatertight,
+    warnings
+  };
+}
+
 
 // Fallback: se o worker falhar, carregamos o OCCT no main thread via <script> UMD
-async function computeGeometryInMainThread(fileBuffer, unit='millimeter') {
+async function computeGeometryInMainThread(fileBuffer, options = 'millimeter') {
+  const linearUnit = typeof options === 'string' ? options : (options.linearUnit || 'millimeter');
+  const sourceUnit = typeof options === 'string' ? null : (options.sourceUnit || null);
   if (!window.__occtLoaded) {
     await new Promise((res, rej) => {
       const s = document.createElement('script');
@@ -90,42 +249,26 @@ async function computeGeometryInMainThread(fileBuffer, unit='millimeter') {
   if (typeof factory !== 'function') throw new Error('OCCT runtime not found in main thread.');
   const occt = await factory();
   const bytes = new Uint8Array(fileBuffer);
-  const res = occt.ReadStepFile(bytes, { linearUnit: unit });
+  const res = occt.ReadStepFile(bytes, { linearUnit });
   if (!res || !res.success) throw new Error('OCCT(ReadStepFile) failed in main thread.');
 
-  const meshes = res.meshes || [];
+  const meshes = Array.isArray(res.meshes) ? res.meshes : [];
   if (!meshes.length) throw new Error('OCCT: no meshes');
 
-  let min = [ Infinity, Infinity, Infinity ];
-  let max = [ -Infinity, -Infinity, -Infinity ];
-  let approxVolume = 0;
-  for (const m of meshes) {
-    const v = (m.attributes?.position?.array) || m.vertices || m.points || [];
-    const idx = (m.index?.array) || m.indices || [];
-    for (let i = 0; i < v.length; i += 3) {
-      const x = v[i], y = v[i+1], z = v[i+2];
-      if (x < min[0]) min[0] = x; if (y < min[1]) min[1] = y; if (z < min[2]) min[2] = z;
-      if (x > max[0]) max[0] = x; if (y > max[1]) max[1] = y; if (z > max[2]) max[2] = z;
-    }
-    for (let i = 0; i < idx.length; i += 3) {
-      const a = idx[i]*3, b = idx[i+1]*3, c = idx[i+2]*3;
-      const ax = v[a], ay = v[a+1], az = v[a+2];
-      const bx = v[b], by = v[b+1], bz = v[b+2];
-      const cx = v[c], cy = v[c+1], cz = v[c+2];
-      // ✅ acumula /6 por triângulo
-      approxVolume += (ax*(by*cz - bz*cy) - ay*(bx*cz - bz*cx) + az*(bx*cy - by*cx)) / 6.0;
-    }
-  }
-  approxVolume = Math.abs(approxVolume);
-
-  const size = [ max[0]-min[0], max[1]-min[1], max[2]-min[2] ];
+  const geom = analyzeOcctMeshes(meshes);
   return {
     ok: true,
     geometry: {
-      unit,
-      bbox: { min, max },
-      size: { x: size[0], y: size[1], z: size[2] },
-      volumeApprox: approxVolume
+      unit: linearUnit,
+      sourceUnit,
+      bbox: { min: geom.min, max: geom.max },
+      size: geom.size,
+      volumeMm3: geom.volume,
+      surfaceAreaMm2: geom.area,
+      isWatertight: geom.isWatertight,
+      openEdgeCount: geom.openEdges,
+      meshCount: meshes.length,
+      warnings: geom.warnings
     }
   };
 }
@@ -145,35 +288,50 @@ function bindUpload(){
   inp.addEventListener('change', e => { const f = e.target.files?.[0]; if (f) handleFile(f); });
 
   async function handleFile(f){
-    if(!/\.(step|stp)$/i.test(f.name)){ toast('Ficheiro inválido. Use .step ou .stp'); return; }
+    if(!/\.(step|stp)$/i.test(f.name)){ toast('Ficheiro inv?lido. Use .step ou .stp'); return; }
 
     state.file = f;
     state.fileMeta = { name: f.name, size: f.size, date: new Date(f.lastModified).toLocaleString('pt-PT') };
     $('#fiName').textContent = state.fileMeta.name;
     $('#fiSize').textContent = humanSize(state.fileMeta.size);
     $('#fiDate').textContent = state.fileMeta.date;
+    const unitCell = $('#fiUnit');
+    if (unitCell) unitCell.textContent = '--';
     $('#fileInfo').classList.remove('hidden');
     $('#toParamsBtn').disabled = true;
 
-    toast('A processar STEP…');
+    toast('A processar STEP...');
 
     const [text, buffer] = await Promise.all([ f.text(), f.arrayBuffer() ]);
+
+    const detectedUnit = detectStepLinearUnit(text);
+    state.unitDetected = detectedUnit;
+    if (unitCell) unitCell.textContent = formatUnitLabel(detectedUnit);
+
+    if (state.params?.globals) {
+      state.params.globals.units = detectedUnit;
+      const unitsSelect = $('#units');
+      if (unitsSelect) {
+        unitsSelect.value = detectedUnit;
+      }
+      saveParamsToStorage();
+    }
 
     const header = parseHeader(text);
     const entities = parseEntities(text);
     const totalEntities = Object.values(entities).reduce((a,b)=>a+b,0);
 
-    const unit = $('#units')?.value || 'millimeter';
-    let occt = await runOcctWorker(buffer, unit);
+    const occtUnit = 'millimeter';
+    let occt = await runOcctWorker(buffer, { linearUnit: occtUnit, sourceUnit: detectedUnit });
 
-    // ✅ Fallback se o worker falhar
     if (!occt.ok) {
       console.warn('OCCT worker falhou:', occt.error);
-      toast('Worker falhou. A calcular no próprio browser…');
+      toast('Worker falhou. A calcular no proprio browser...');
       try {
-        occt = await computeGeometryInMainThread(buffer, unit);
+        occt = await computeGeometryInMainThread(buffer, { linearUnit: occtUnit, sourceUnit: detectedUnit });
       } catch (e) {
         console.error('Fallback OCCT falhou:', e);
+        occt = { ok: false, error: e };
       }
     }
 
@@ -183,12 +341,25 @@ function bindUpload(){
       file: { name: f.name, sizeBytes: f.size },
       header,
       summary: { totalEntities, uniqueTypes: Object.keys(entities).length },
+      meta: { detectedUnit, occtUnit },
       entities,
       geometry: occt.ok ? occt.geometry : undefined
     };
 
+    if (!occt.ok) {
+      toast('Falha ao processar geometria. Ver consola.');
+      return;
+    }
+
+    if (occt.geometry?.warnings?.length) {
+      console.warn('OCCT geometry warnings:', occt.geometry.warnings);
+    }
+
     $('#toParamsBtn').disabled = false;
-    toast('STEP processado. Revê parâmetros e calcula.');
+    const unitLabel = formatUnitLabel(detectedUnit) || detectedUnit || 'mm';
+    toast(occt.geometry?.warnings?.length
+      ? `STEP processado com avisos (${unitLabel}). Verifica o modelo antes de calcular.`
+      : `STEP processado. Unidade detectada: ${unitLabel}.`);
   }
 }
 
@@ -263,14 +434,16 @@ function snapshotParams(){
       units: $('#units').value,
       currency: $('#currency').value,
       batches: [ Number($('#q1').value), Number($('#q10').value), Number($('#q50').value), Number($('#q100').value) ],
+      finish_allowance_mm: state.params?.globals?.finish_allowance_mm ?? SQ_CONFIG.globals.finish_allowance_mm ?? 0.2,
+      series_gain: state.params?.globals?.series_gain ?? SQ_CONFIG.globals.series_gain ?? 0.7,
       discounts: SQ_CONFIG.globals.discounts || []
     }
   };
   state.params = p; saveParamsToStorage(); return p;
 }
 
-/* ----------------------- Formatação ----------------------- */
-const CURRENCY_SYMBOLS = { EUR:'€', USD:'$', GBP:'£' };
+/* ----------------------- FormataÃ§Ã£o ----------------------- */
+const CURRENCY_SYMBOLS = { EUR:'â‚¬', USD:'$', GBP:'Â£' };
 const fmtNumber = v => new Intl.NumberFormat('pt-PT',{minimumFractionDigits:2,maximumFractionDigits:2}).format(v);
 const fmtMoney  = (v,c='EUR') => `${fmtNumber(v)}${CURRENCY_SYMBOLS[c] || ` ${c}`}`;
 const fmtMin    = min => `${Math.round(min)}min`;
@@ -290,73 +463,114 @@ function mmFactor(unit){
   }
 }
 
-/* ----------------------- Cálculo real ----------------------- */
+/* ----------------------- CÃ¡lculo real ----------------------- */
 function mm3_to_cm3(v){ return v/1000; }
+const mm2_to_cm2 = v => v/100;
 function kgFromCm3(cm3, density){ return (cm3*density)/1000; }
 
 function computeFromStepJson(stepJson, p){
-  if (!stepJson || !stepJson.geometry) throw new Error('Geometria ausente. Carrega um STEP válido.');
+  if (!stepJson || !stepJson.geometry) throw new Error('Geometria ausente. Carrega um STEP v?lido.');
 
   const g = stepJson.geometry;
-  const f = mmFactor(g.unit); // para mm
+  if (!Number.isFinite(g.volumeMm3) || g.volumeMm3 <= 0) {
+    throw new Error('Geometria inv?lida: volume nulo ou indefinido.');
+  }
 
-  // dimensões lineares convertidas para mm
-  const dims_mm = { x: g.size.x * f, y: g.size.y * f, z: g.size.z * f };
-  const bbox_mm3 = dims_mm.x * dims_mm.y * dims_mm.z;
+  const mmScale = mmFactor(g.unit);
+  const dims_mm = { x: g.size.x * mmScale, y: g.size.y * mmScale, z: g.size.z * mmScale };
 
-  // volume convertido para mm³
-  const part_mm3 = g.volumeApprox * (f**3);
+  const stockFactor = Math.max(1, p.globals.stock_factor || 1.05);
+  const linearStockFactor = Math.cbrt(stockFactor);
+  const stock_dims_mm = {
+    x: dims_mm.x * linearStockFactor,
+    y: dims_mm.y * linearStockFactor,
+    z: dims_mm.z * linearStockFactor
+  };
+  const stock_mm3 = stock_dims_mm.x * stock_dims_mm.y * stock_dims_mm.z;
+  const part_mm3 = (g.volumeMm3 || 0) * Math.pow(mmScale, 3);
 
-  // volumes em cm³
-  const stock_mm3 = bbox_mm3 * (p.globals.stock_factor || 1.05);
   const stock_cm3 = mm3_to_cm3(stock_mm3);
-  const part_cm3  = mm3_to_cm3(part_mm3);
+  const part_cm3 = mm3_to_cm3(part_mm3);
   const removal_cm3 = Math.max(0, stock_cm3 - part_cm3);
 
-  // features
-  const faces = (stepJson.entities?.ADVANCED_FACE) || 0;
-  const holes = (stepJson.entities?.CIRCLE) || 0;
+  const surface_mm2 = (g.surfaceAreaMm2 || 0) * Math.pow(mmScale, 2);
+  const surface_area_cm2 = mm2_to_cm2(surface_mm2);
 
-  // tempos (min)
+  const faces = stepJson.entities?.ADVANCED_FACE || 0;
+  const holes = stepJson.entities?.CIRCLE || 0;
+
   const setup_min = p.machine.setup_minutes || 0;
-  const rough_min = removal_cm3 / (p.material.mrr_rough_cm3_min || 400);
-  const finish_min = (faces * (p.globals.seconds_per_face||0.8))/60 + (part_cm3*0.02)/(p.material.mrr_finish_cm3_min||120);
-  const drill_min = (holes * (p.globals.seconds_per_hole||3))/60;
+  const seconds_per_face = p.globals.seconds_per_face || 0;
+  const seconds_per_hole = p.globals.seconds_per_hole || 0;
+  const finishAllowance = Number.isFinite(p.globals.finish_allowance_mm) ? Math.max(0, p.globals.finish_allowance_mm) : 0.2;
 
-  const unit_process_min_pilot  = rough_min + finish_min + drill_min; // por uni, sem setup
-  const unit_process_min_series = unit_process_min_pilot * 0.7;       // heurística série
+  const finish_volume_mm3 = Math.max(0, surface_mm2 * finishAllowance);
+  const finish_volume_cm3 = mm3_to_cm3(finish_volume_mm3);
+  const rough_volume_cm3 = Math.max(0, removal_cm3 - finish_volume_cm3);
 
-  // custos
+  const rough_min = rough_volume_cm3 / (p.material.mrr_rough_cm3_min || 400);
+  const finish_min = (finish_volume_cm3 / (p.material.mrr_finish_cm3_min || 120)) + ((faces * seconds_per_face) / 60);
+  const drill_min = (holes * seconds_per_hole) / 60;
+
+  const unit_process_min_pilot = rough_min + finish_min + drill_min;
+  const seriesGain = Number.isFinite(p.globals.series_gain) && p.globals.series_gain > 0
+    ? Math.min(Math.max(p.globals.series_gain, 0.3), 1)
+    : 0.7;
+  const unit_process_min_series = unit_process_min_pilot * seriesGain;
+
   const hourly = p.machine.hourly_rate || 45;
-  const mult   = (p.globals.overhead_mult||1.1) * (p.globals.margin_mult||1.15);
-  const setup_cost = (setup_min/60) * hourly * mult;
+  const overheadMult = p.globals.overhead_mult || 1.1;
+  const marginMult = p.globals.margin_mult || 1.15;
+  const wearRate = p.globals.wear_per_cm3 || 0.002;
 
-  // custo material (stock)
-  const mat_kg = kgFromCm3(stock_cm3, p.material.density_g_cm3||1.0);
-  const material_cost = mat_kg * (p.material.cost_per_kg||5);
+  const wear_cost_nomargin = removal_cm3 * wearRate;
+  const mat_kg = kgFromCm3(stock_cm3, p.material.density_g_cm3 || 1.0);
+  const material_cost_nomargin = mat_kg * (p.material.cost_per_kg || 5);
 
-  const wear = removal_cm3 * (p.globals.wear_per_cm3||0.002);
+  const base_setup_cost = (setup_min / 60) * hourly;
+  const base_cycle_cost = (unit_process_min_pilot / 60) * hourly;
+  const setup_cost_overhead = base_setup_cost * overheadMult;
+  const cycle_cost_overhead = base_cycle_cost * overheadMult;
 
-  const pilot_total_min = setup_min + unit_process_min_pilot;
-  const pilot_machine_cost = (pilot_total_min/60) * hourly * mult;
-  const pilot_total_cost = pilot_machine_cost + material_cost + wear;
+  const per_unit_cost_before_margin = cycle_cost_overhead + wear_cost_nomargin + material_cost_nomargin;
+  const per_unit_cost_with_margin = per_unit_cost_before_margin * marginMult;
+  const setup_cost_with_margin = setup_cost_overhead * marginMult;
+  const pilot_total_cost = (setup_cost_overhead + per_unit_cost_before_margin) * marginMult;
 
   return {
-    diag: { // para o painel
+    diag: {
       dims_mm,
+      stock_dims_mm,
       part_cm3,
+      stock_cm3,
       removal_cm3,
+      surface_area_cm2,
       faces,
-      holes
+      holes,
+      sourceUnit: g.sourceUnit || g.unit,
+      isWatertight: g.isWatertight,
+      warnings: g.warnings || []
     },
     times: {
       setup_min,
       rough_min, finish_min, drill_min,
       unit_process_min_pilot,
-      unit_process_min_series
+      unit_process_min_series,
+      series_gain: seriesGain
     },
     costs: {
-      hourly, mult, setup_cost, material_cost, wear,
+      hourly,
+      overhead_mult: overheadMult,
+      margin_mult: marginMult,
+      base_setup_cost,
+      base_cycle_cost,
+      setup_cost_overhead,
+      cycle_cost_overhead,
+      setup_cost_with_margin,
+      per_unit_cost_before_margin,
+      per_unit_cost_with_margin,
+      wear_cost_nomargin,
+      material_cost_nomargin,
       pilot_total_cost
     }
   };
@@ -368,42 +582,39 @@ function renderResults(calc, p){
 
   const currency = p.globals.currency;
 
-  // Painel de diagnóstico
-  $('#mBBox').textContent = `${calc.diag.dims_mm.x.toFixed(2)} × ${calc.diag.dims_mm.y.toFixed(2)} × ${calc.diag.dims_mm.z.toFixed(2)}`;
+  $('#mBBox').textContent = `${calc.diag.dims_mm.x.toFixed(2)} | ${calc.diag.dims_mm.y.toFixed(2)} | ${calc.diag.dims_mm.z.toFixed(2)}`;
   $('#mVolume').textContent = `${fmtNumber(calc.diag.part_cm3)}`;
   $('#mRemoval').textContent = `${fmtNumber(calc.diag.removal_cm3)}`;
   $('#mFaces').textContent = `${calc.diag.faces}`;
   $('#mCircles').textContent = `${calc.diag.holes}`;
 
-  // Sliders display
   $('#sliderFaceVal').textContent = `${Number(p.globals.seconds_per_face).toFixed(1)}s`;
   $('#sliderHoleVal').textContent = `${Number(p.globals.seconds_per_hole).toFixed(1)}s`;
 
-  // Peça Piloto = Q1
   $('#rPilotTime').textContent = fmtMin(calc.times.setup_min + calc.times.unit_process_min_pilot);
   $('#rPilotCost').textContent = fmtMoney(calc.costs.pilot_total_cost, currency);
 
-  // Série
   const host = $('#batchList'); host.innerHTML='';
-  const perUnitMin = calc.times.unit_process_min_series; // sem setup
-  const pilot_unit_no_setup = Math.max(0, calc.costs.pilot_total_cost - calc.costs.setup_cost);
+  const perUnitMin = calc.times.unit_process_min_series;
+  const perUnitCost = calc.costs.per_unit_cost_with_margin;
+  const setupCost = calc.costs.setup_cost_with_margin;
 
-  p.globals.batches.forEach(q=>{
-    const discountPct = getQtyDiscountPct(q, p.globals.discounts); // 0..1
-    const unitPrice = pilot_unit_no_setup * (1 - discountPct);
-    const totalCost = unitPrice * q + calc.costs.setup_cost + calc.costs.material_cost + calc.costs.wear;
-    const totalMin  = perUnitMin * q + calc.times.setup_min;
+  (p.globals.batches || []).filter(q => Number.isFinite(q) && q > 0).forEach(q => {
+    const discountPct = getQtyDiscountPct(q, p.globals.discounts);
+    const unitPrice = perUnitCost * (1 - discountPct);
+    const totalCost = unitPrice * q + setupCost;
+    const totalMin = perUnitMin * q + calc.times.setup_min;
 
     const row = document.createElement('div');
     row.className = 'kv';
     row.innerHTML =
-      `<span>Q${q}</span>`+
-      `<b>`+
-        `${fmtMoney(unitPrice, currency)}/uni `+
-        `${fmtMoney(totalCost, currency)}/total `+
-        ` · `+
-        `${fmtMin(perUnitMin)}/uni `+
-        `${fmtMin(totalMin)}/total`+
+      `<span>Q${q}</span>` +
+      `<b>` +
+        `${fmtMoney(unitPrice, currency)}/uni ` +
+        `${fmtMoney(totalCost, currency)}/total ` +
+        ` | ` +
+        `${fmtMin(perUnitMin)}/uni ` +
+        `${fmtMin(totalMin)}/total` +
       `</b>`;
     host.appendChild(row);
   });
@@ -450,7 +661,7 @@ function exportResults(){
   URL.revokeObjectURL(a.href);
 }
 
-/* ----------------------- Navegação & Boot ----------------------- */
+/* ----------------------- NavegaÃ§Ã£o & Boot ----------------------- */
 function bindNav(){
   $('#toParamsBtn').addEventListener('click', ()=> setStep(2));
   $('#backToUploadBtn').addEventListener('click', ()=> setStep(1));
@@ -464,10 +675,10 @@ function bindNav(){
     try{
       const calc = computeFromStepJson(state.stepJson, p);
       renderResults(calc, p);
-      toast('Cálculo concluído a partir do STEP.');
+      toast('CÃ¡lculo concluÃ­do a partir do STEP.');
     }catch(err){
       console.error(err);
-      toast('Falha no cálculo. Ver consola.');
+      toast('Falha no cÃ¡lculo. Ver consola.');
     }
   });
   $('#backToParamsBtn').addEventListener('click', ()=> setStep(2));
@@ -489,6 +700,12 @@ function initParams(){
     globals: {...SQ_CONFIG.globals}
   };
   const p = stored || base;
+  if (p.globals.finish_allowance_mm == null) {
+    p.globals.finish_allowance_mm = SQ_CONFIG.globals.finish_allowance_mm ?? 0.2;
+  }
+  if (p.globals.series_gain == null) {
+    p.globals.series_gain = SQ_CONFIG.globals.series_gain ?? 0.7;
+  }
 
   $('#materialKey').addEventListener('change', e=>{
     const mk = e.target.value; const m = SQ_CONFIG.materials[mk];

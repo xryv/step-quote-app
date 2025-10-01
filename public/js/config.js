@@ -19,6 +19,8 @@ window.SQ_CONFIG = {
     wear_per_cm3: 0.002,
     overhead_mult: 1.12,
     margin_mult: 1.18,
+    finish_allowance_mm: 0.2,
+    series_gain: 0.7,
     batches: [1, 10, 50, 100],
 
     // 🔽 NOVO: descontos por quantidade (aplicados ao preço unit/sem setup)
